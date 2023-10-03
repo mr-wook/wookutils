@@ -10,6 +10,61 @@ if True:
 	import time
 
 
+class NoteDB:
+	def __init__(self, fn, backing_store='json'):
+		self._fn = fn
+		self._bs = backing_store
+		self._data = self.load(self._fn, self._bs)
+
+	def __len__(self):
+		return len(self._data)
+
+	def __getitem__(self, i):
+		return self._data[k]
+
+	def backup(self):
+		if self._bs == 'json':
+			bakfile = f"{self._fn}.bak"
+			shutil(self._fn, bakfile)
+		else:
+			raise RuntimeError(f"Unknown Backing Store type {self._bs}")
+		return
+
+	def load(self, fn, backing_store = None):
+		if not backing_store:
+			backing_store = 'json'
+		if backing_store == 'json':
+			if not os.path.isfile(fn):
+				raise [ ] # NULL DB not legal?: RuntimeError(f"NoteDB: File not found {fn}")
+			sz = os.stat(fn)[6]
+			if sz:
+				return [ ]
+			with open(fn, 'r') as ifd:
+				ibuf = ifd.read(1024 * 1024 * 64) # Thassalottanotes!
+			json_ = json.loads(ibuf)
+			olist = [ ]
+			for dict_ in json_:
+				if 'name' not in dict_:
+					note = Note(f"unnamed_{len(olist)+1}", **dict_)
+				else:
+					note = Note(**dict_)
+				olist.append(note)
+		else:
+			raise RuntimeError(f"Unknown Backing Store type {backing_store}")
+		return olist
+ 
+	def save(self):
+		writable = [note._params for note in self._notes]
+		for params in writable:
+			params['when'] = str(params['when'])
+			# print(params)
+		# print(f"Writing {len(writable)} records")
+		with open(self._fn, 'w') as ofd:
+			ofd.write(json.dumps(writable) + "\n")
+		self._updated = False
+		return
+
+
 class Note:
 	"An individual Note"
 	UPDATEABLE = [ 'name', 'when', 'priority' ]
@@ -92,6 +147,7 @@ class Note:
 		if type(when_) == type(""):
 			when_ = datetime.datetime.fromisoformat(when_)
 		return f"{when_.hour}:{when_.minute:02d} {when_.month}/{when_.day}/{when_.year}"
+
 
 class Notes:
 	"A note aggregator"
@@ -210,6 +266,8 @@ class Notes:
 		else:
 			src = self._notes
 		ordinal = args[0]
+		if ordinal < (365 * 5):
+			ordinal = self.today + ordinal
 		# print(f"Notes._filter: verb={verb} ordinal={ordinal}")
 		if verb in [ 'before', 'after', 'during', 'today', 'yesterday' ]:
 			return self._temporal_filter(verb, ordinal)
@@ -243,7 +301,7 @@ class Notes:
 		if not os.stat(fn)[6]:
 			return [ ]
 		with open(fn, 'r') as ifd:
-			ibuf = ifd.read(1024 * 1024 * 16) # Thassalottanotes!
+			ibuf = ifd.read(1024 * 1024 * 64) # Thassalottanotes!
 		json_ = json.loads(ibuf)
 		olist = [ ]
 		for dict_ in json_:
@@ -277,6 +335,11 @@ class Notes:
 		return datetime.datetime.utcnow().toordinal()
 
 	@property
+	def topics(self):
+		topics = {note['name'] for note in self._notes}
+		return topics
+
+	@property
 	def updated(self):
 		return self._updated
 
@@ -285,19 +348,20 @@ class Notes:
 		return self.today - 1
 	
 
-
 if __name__ == "__main__":
 	class App:
 		# TODO?: Add support for .noteable.last to use for last note modified?
 		#   or .notable { last: n, auto-enumerate: False, auto-confirm: True }?
 		def __init__(self, fn = None):
 			self._notes = Notes()
+			self._pname = sys.argv[0]
 			if fn:
 				if os.path.isfile(fn):
 					self._notes.load()
+			self._help = dict(edit=f"{self._pname} edit <index> (p <n>)|(n <name>|(a <append_description)(i <prepend_description>)|(c <desc>))")
 			self._ops = { '+' : self._add, '-' : self._delete,
-					      'after' : self._after, 'before' : self._before, 'edit' : self._edit, 'ls' : self._ls,
-					      'pri' : self._prioritize, 'prio' : self._prioritize, 'priority' : self._prioritize,
+					      'after' : self._after, 'before' : self._before, 'during': self._during, 'edit' : self._edit,
+					      'ls' : self._ls, 'pri' : self._prioritize, 'prio' : self._prioritize, 'priority' : self._prioritize,
 					      'today' : self._today, 'yesterday' : self._yesterday }
 
 		def _screen_args(self, args):
@@ -338,6 +402,8 @@ if __name__ == "__main__":
 			when = args[0]
 			# print(f"_after: when={when}")
 			notes = self._notes.after(when)
+			if not notes:
+				return None
 			print(f"[{len(notes)} since {when}]")
 			# _ = 
 			return "\n".join([note.one_line for note in notes])
@@ -346,7 +412,9 @@ if __name__ == "__main__":
 			# Collapse this into _since which handles before and after cases;
 			when = args[0]
 			notes = self._notes.before(when)
-			print(f"[{len(notes)} since {when}]")
+			if not notes:
+				return None
+			print(f"[{len(notes)} before {when}]")
 			return "\n".join([note.one_line for note in notes])
 
 		def _checkrange(self, i):
@@ -387,14 +455,45 @@ if __name__ == "__main__":
 				self._notes.save()
 			return None
 
+		def display(self, rv):
+			if type(rv) == None:
+				return
+			if type(rv) == type([ ]):
+				for e in rv:
+					if isinstance(e, Note):
+						print(str(e))
+				return
+			if isinstance(rv, Notes):
+				_ = [print(str(note)) for note in rv]
+				return
+			if type(rv) == type(""):
+				print(rv)
+			return
+
+		def _during(self, *args):
+			when = args[0]
+			notes = self._notes.during(when)
+			if not notes:
+				return None
+			print(f"[{len(notes)}] during {when}")
+			return "\n".join([note.one_line for note in notes])
+
 		def _edit(self, *args):
 			def update(i, k, v):
 				note = self._notes[i]
 				note[k] = v
-				self._notes.save()
+				conf = input(f"Confirm update {note.one_line} [Y/n]: ")
+				if not (conf or conf.lower() == 'y'):
+					print("Confirmed")
+					self._notes.save()
+				else:
+					print("Update declined")
+					sys.exit(0)
 				return note.one_line
 
 			args = list(args)
+			if 'help' in args:
+				return self._help['edit']
 			i = int(args.pop(0)) - 1
 			edit_cmd = args.pop(0)
 			valid, errstr = self._checkrange(i)
@@ -404,7 +503,7 @@ if __name__ == "__main__":
 			if edit_cmd.lower() not in [ 'a', 'c', 'i', 'n', 'p']:
 				return "Unrecognized edit command {edit_cmd}"
 			edit_cmd = edit_cmd.lower()
-			self._notes.sort()
+			# self._notes.sort()
 			if edit_cmd == 'p':
 				return update(i, 'priority', int(args[0]))
 			if edit_cmd == 'n':
@@ -415,7 +514,8 @@ if __name__ == "__main__":
 				return update(i, 'description', self._notes[i]['description'] + "; " + " ".join(args))
 			if edit_cmd == "i":
 				return update(i, 'description', " ".join(args) + "; " + self._notes[i]['description'])
-			raise NotImplementedError
+			print(f"Don't understand edit command {edit_cmd}")
+			sys.exit(1)
 
 		def _ls(self, *args):
 			# Ignore args (for now)
@@ -425,13 +525,13 @@ if __name__ == "__main__":
 			if '-N' in args:
 				enumerate = True
 				args.remove('-N')
-			self._notes.sort()
+			# self._notes.sort()
 			if args:
 				topics = [ ]
 				for topic in args:
 					if enumerate:
-						topics += self._notes.enumerate(topic)
-					return "\n".join(topics)
+						topics += self._notes.enumerate(None, topic)
+				return "\n".join(topics)
 			if enumerate:
 				return "\n".join(self._notes.enumerate())
 			_ = [note.one_liner() for note in self._notes]
@@ -453,23 +553,15 @@ if __name__ == "__main__":
 				print(f"[{len(self._notes)} loaded]")
 				return
 			op = args.pop(0)
+			if op in self.topics:
+				notes = [print(note.one_line) for note in self._notes if note['name'] == op]
+				sys.exit(0)
 			if op not in self._ops:
 				print(f"Unknown operation {op}")
 				sys.exit(1)
 			func = self._ops[op]
 			rv = func(*args)
-			if type(rv) == None:
-				sys.exit(0)
-			if type(rv) == type([ ]):
-				for e in rv:
-					if isinstance(e, Note):
-						print(str(e))
-				sys.exit(0)
-			if isinstance(rv, Notes):
-				_ = [print(str(note)) for note in rv]
-				sys.exit(0)
-			if type(rv) == type(""):
-				print(rv)
+			self.display(rv)
 			sys.exit(0)
 
 		def _today(self, *args):
@@ -479,6 +571,10 @@ if __name__ == "__main__":
 		def _yesterday(self, *args):
 			notes = [note.one_line for note in self._notes.during('yesterday')]
 			return "\n".join(notes)
+
+		@property
+		def topics(self):
+			return self._notes.topics
 
 		@property
 		def updated(self):
@@ -497,6 +593,3 @@ if __name__ == "__main__":
 	# cli: ./noteable before yesterday|<n>d
 	# cli: ./noteable after yesteray|<n>d
 	# cli: noteable edit <n> field=value . . .
-
-
-
