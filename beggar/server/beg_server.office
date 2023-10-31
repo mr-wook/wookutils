@@ -1,0 +1,196 @@
+#!/bin/env python3
+
+if True:
+    from   configparser import ConfigParser
+    from   flask import Flask, request, jsonify
+    import logging
+    import os
+    import shutil
+
+
+logging.basicConfig(filename='beg_server.log', level=logging.DEBUG)
+
+app = Flask(__name__)
+
+def config_parse():
+    cfg = ConfigParser()
+    cfg.read(os.path.expanduser("~/beggar_server.cfg"))
+    return cfg
+
+def error_json(error_text, code = 400):
+    return jsonify(error=error_text), code
+
+def path_and_exists(json_, must_exist=True):
+    if 'path' not in json_:
+        return error_json("No path in json")
+    fp = json_['path']
+    if not fp.startswith("/"):
+        return error_json(f"Path must be rooted, {fp} isn't")
+    if must_exist:
+        if not os.path.exists(fp):
+            return error_json(f"No such file {fp}")
+    return True
+
+@app.route('/ls/', methods=['POST'])
+def ls_item():
+    try:
+        # Parse the JSON from the request
+        data = request.json
+        rc = path_and_exists(data)
+        fp = data['path']
+        if rc != True:
+            return rc   # It's the error_json result;
+        if os.path.isfile(fp):
+            statbuf = os.stat(fp)
+            data = dict(path=fp, size=statbuf[6], uid=statbuf[4], gid=statbuf[5])
+        elif os.path.isdir(fp):
+            flist = [fn for fn in os.listdir(fp) if not fn.startswith('.')] # don't do hidden files;
+            flist.sort()
+            data = [ ]
+            for fn in flist:
+                statbuf = os.stat(f"{fp}/{fn}")
+                data.append(dict(path=fn, size=statbuf[6], uid=statbuf[4], gid=statbuf[5]))
+        else:
+            return error_json("{fp} is neither a directory nor a file")
+        return jsonify(data)
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+@app.route('/move/', methods = [ 'POST' ])
+def move_file():
+    data = request.json
+    if 'source' not in data:
+        return error_json("No source path in json")
+    src = data['source']
+    if 'dest' not in data:
+        return error_json("No dest path in json")
+    dest = data['dest']
+    try:
+        shutil.move(src, dest)
+        return jsonify(dict(result=f"Move complete {src} --> {dest}"))
+    except Exception as e:
+        return error_json(f"Move failed -- {str(e)}")
+
+@app.route('/rm/', methods = [ 'POST' ])
+def rm_item():
+    def can_be_deleted(fp):
+        if not fp.startswith("/tmp/"):
+            return False
+        return True
+    data = request.json
+    rc = path_and_exists(data)
+    if rc != True:
+        return rc
+    fp = data['path']
+    if not can_be_deleted(fp):
+        return error_json(f"Invalid path {fp} you destructive prick, fuck off!")
+    try:
+        os.unlink(fp)
+        return jsonify({"result": f"{fp} is so gone..."})
+    except Exception as e:
+        return error_json(str(e))
+
+@app.route('/touch/', methods=[ 'POST' ])
+def touch_item():
+    data = request.json
+    rc = path_and_exists(data, must_exist=False)
+    if rc != True:
+        return rc
+    fp = data['path']
+    try:
+        afd = open(fp, 'a')
+        afd.close()
+        return jsonify({"result": f"Touched {fp}"})
+    except Exception as e:
+        return error_json(str(e)), 400
+
+@app.errorhandler(400)
+def handle_bad_request(error):
+    app.logger.warning('Bad Request: %s', request.url)
+    app.logger.warning('Referer: %s', request.headers.get('Referer'))
+    app.logger.warning('Source IP: %s', request.remote_addr)
+    app.logger.warning('User Agent: %s', request.headers.get('User-Agent'))
+    return 'Bad Request', 400
+
+if __name__ == "__main__":
+    # app.config = config_parse()
+    app.run(debug=True, host='0.0.0.0', port=6869) # use 0.0.0.0 to accept any;
+
+
+# Questions:
+#   Do we have Cloud Access? Yes, 1 Gbit link limit;
+#   Should we backup to Cloud? Perforce
+#   3 Wildtrax players for Post Card (Movie, Assisted Hearing, Atrium);
+
+# from dmitri_script import *
+# import zlib_utility_functions
+# import zlib
+
+# # This client loads the project file with the specified name into the D-Mitri system.
+# # By default it will look for the project to load in the "Support Files" folder.  If you
+# # want you can modify filePath to look elsewhere, though.
+# class OpenProjectClient(BasicClient):
+#    def __init__(self):
+#       self._sendConfig = True          # set to False if you'd rather just load the Project but not send config
+#       self._loadMixerSettings = False  # set to True if you'd like the project's saved Mixer Settings to be loaded in
+
+#    def ConnectedToServer(self):
+#       if len(sys.argv) > 1:
+#          if ("/" in sys.argv[1]):
+#             filePath = sys.argv[1]
+#          else:
+#             filePath = "/tmp/supportfiles/" + sys.argv[1]
+#          self.Log("Loading project file [%s]" % filePath)
+#          projectMsg = self.ReadAndInflateProjectFile(filePath)
+#          if (projectMsg != None):
+#             # print projectMsg  # uncomment if you'd like to see the whole project printed to stdout!
+#             if self._sendConfig:
+#                projectMsg.PutBool("sendconfig", True)
+#             if self._loadMixerSettings == False:
+#                self.RemoveMixerSettingsFromProjectMessage(projectMsg)
+#             self.SendMessageToServer(projectMsg, "cued")
+#             self.Log("Sent project file [%s] to D-Mitri system." % filePath)
+#       else:
+#          self.Log("Usage:  upload_project.py support_file_name.dmitriProject")
+
+#       self.EndEventLoop()
+
+#    # Returns a Message object representing the loaded Project on success, or returns None on failure
+#    def ReadAndInflateProjectFile(self, filePath): 
+#       infile = open(filePath, 'rb')
+#       if (infile != None):
+#          header, numInflatedBytes = struct.unpack("<2L", infile.read(8))
+#          if (header == zlib_utility_functions.ZLIB_CODEC_HEADER_INDEPENDENT):
+#             zlibCompressedData = infile.read()
+#             if (zlibCompressedData != None):
+#                infMsg = message.Message()
+#                dobj = zlib.decompressobj()
+#                idata = dobj.decompress(zlibCompressedData, numInflatedBytes)
+#                idata = idata + dobj.flush()
+#                infMsg.Unflatten(cStringIO.StringIO(idata))
+#                return infMsg.GetMessage("project")
+#             else:
+#                self.Log("Error, couldn't read project file [%s]" % filePath)
+#          else:
+#             self.Log("Error, wrong header in file [%s] (wrong file type?)" % filePath)
+#          infile.close()
+#       else:
+#          self.Log("Error, couldn't open project file [%s]" % filePath)
+
+#       return None  # Failure
+
+#    # Removes the Mixer Settings message from the given Project Message so that they won't get loaded in
+#    def RemoveMixerSettingsFromProjectMessage(self, projectMsg):
+#       subMsg = projectMsg.GetMessage(storage_reflect_constants.PR_NAME_NODECHILDREN)
+#       if subMsg:
+#          subMsg = subMsg.GetMessage(qnet_protocol.CUEPROJECT_NODENAME_MIXERCONFIG)
+#          if (subMsg):
+#             subMsg = subMsg.GetMessage(storage_reflect_constants.PR_NAME_NODEDATA)
+#             if (subMsg):
+#                subMsg.RemoveName("gc_cp") 
+#                for i in range(0, 3):
+#                   subMsg.RemoveName("gc_sr%i"%i)
+
+# if __name__ == "__main__":
+#    OpenProjectClient().RunEventLoop()
